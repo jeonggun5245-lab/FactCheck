@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from google import genai
@@ -55,17 +56,37 @@ FINAL_SCHEMA = {
 
 
 def _generate_json(client: genai.Client, model: str, prompt: str, schema: dict, max_output_tokens: int = 7000) -> dict[str, Any]:
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=schema,
-            temperature=0.1,
-            max_output_tokens=max_output_tokens,
-        ),
-    )
-    if not response.text:
+    # Gemini may return 503 when the selected model is temporarily overloaded.
+    # Retry only 503 errors; quota, authentication, and request errors should
+    # surface immediately with their original message.
+    response = None
+    retry_delays = (3, 8, 15)
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_json_schema=schema,
+                    temperature=0.1,
+                    max_output_tokens=max_output_tokens,
+                ),
+            )
+            break
+        except Exception as exc:
+            status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            is_overloaded = status_code == 503 or "503 UNAVAILABLE" in str(exc) or "503" in str(exc) and "UNAVAILABLE" in str(exc)
+            if not is_overloaded or attempt >= len(retry_delays):
+                if is_overloaded:
+                    raise RuntimeError(
+                        "Gemini 모델이 현재 요청을 처리할 수 없어요(503). "
+                        "잠시 후 다시 분석해 주세요. API 키나 기사 입력 오류와는 다른 일시적 서버 혼잡입니다."
+                    ) from exc
+                raise
+            time.sleep(retry_delays[attempt])
+
+    if response is None or not response.text:
         raise RuntimeError("Gemini가 비어 있는 응답을 반환했습니다.")
     try:
         data = json.loads(response.text)
