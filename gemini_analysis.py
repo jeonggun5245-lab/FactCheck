@@ -77,6 +77,13 @@ def _generate_json(client: genai.Client, model: str, prompt: str, schema: dict, 
         except Exception as exc:
             status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
             is_overloaded = status_code == 503 or "503 UNAVAILABLE" in str(exc) or "503" in str(exc) and "UNAVAILABLE" in str(exc)
+            is_timeout = "timeout" in exc.__class__.__name__.lower() or "timed out" in str(exc).lower()
+            if is_timeout:
+                raise RuntimeError(
+                    "Gemini 응답이 120초 안에 도착하지 않았습니다. "
+                    "일시적인 서버 지연 또는 요청량 문제일 수 있어요. "
+                    "잠시 후 다시 분석해 주세요."
+                ) from exc
             if not is_overloaded or attempt >= len(retry_delays):
                 if is_overloaded:
                     raise RuntimeError(
@@ -116,7 +123,7 @@ URL: {article.get('url','')}
 
 def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, sources: list[dict], model: str = DEFAULT_MODEL) -> dict:
     evidence_block = "\n\n".join(
-        f"[{s['id']}] 제목: {s['title']}\n도메인: {s['domain']} / 게시·수집 시각: {s['date']}\nURL: {s['url']}\n본문 발췌: {s.get('text') or '본문 자동 추출 실패. 제목과 메타정보만 확보됨.'}"
+        f"[{s['id']}] 제목: {s['title']}\n도메인: {s['domain']} / 게시·수집 시각: {s['date']}\nURL: {s['url']}\n본문 발췌: {(s.get('text') or '본문 자동 추출 실패. 제목과 메타정보만 확보됨.')[:2200]}"
         for s in sources
     ) or "검색 결과를 확보하지 못함. 검증 근거 없음."
 
@@ -137,7 +144,7 @@ def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, 
 제목: {article.get('title','')}
 URL: {article.get('url','')}
 본문:
-{article.get('body','')[:15000]}
+{article.get('body','')[:10000]}
 
 [1단계에서 추출한 주장]
 {json.dumps(extracted, ensure_ascii=False)}
@@ -147,7 +154,7 @@ URL: {article.get('url','')}
 
 각 주장에 대해 판정, 구체적인 이유, 사용한 출처 ID를 작성하세요. 종합 평가에서는 근거의 범위와 한계를 명시하세요.
 """
-    data = _generate_json(client, model, prompt, FINAL_SCHEMA, 7500)
+    data = _generate_json(client, model, prompt, FINAL_SCHEMA, 6000)
     valid_ids = {s["id"] for s in sources}
     for claim in data.get("claims", []):
         if isinstance(claim, dict):
@@ -164,7 +171,7 @@ URL: {article.get('url','')}
 def run_full_analysis(api_key: str, article: dict, model: str = DEFAULT_MODEL, progress=None) -> dict:
     if not api_key:
         raise ValueError("Gemini API 키가 설정되지 않았습니다. 성인 운영자가 Streamlit Secrets에 GEMINI_API_KEY를 등록해야 합니다.")
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
 
     if progress:
         progress("① Gemini가 기사에서 핵심 사실 주장을 추출하고 있어요.")
