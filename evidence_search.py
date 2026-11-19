@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import xml.etree.ElementTree as ET
+from bs4 import BeautifulSoup
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlencode, urlparse
@@ -91,8 +92,13 @@ def search_google_news(query: str, maxrecords: int = 5, date_window: tuple[str, 
             final_url = resolved.url
             resolved.close()
         except Exception:
-            continue
+            # Keep the RSS result if the publisher redirect cannot be resolved.
+            # Its title and snippet remain useful discovery evidence, but the
+            # aggregator URL/domain must not be mistaken for the publisher.
+            final_url = link
         domain = urlparse(final_url).hostname or "출처 미상"
+        description_html = item.findtext("description") or ""
+        snippet = BeautifulSoup(description_html, "html.parser").get_text(" ", strip=True)
         published = item.findtext("pubDate") or "날짜 미상"
         try:
             published = parsedate_to_datetime(published).isoformat()
@@ -105,20 +111,26 @@ def search_google_news(query: str, maxrecords: int = 5, date_window: tuple[str, 
             "date": published,
             "language": "en",
             "country": "US",
+            "snippet": snippet[:1200],
+            "search_query": query,
         })
     return results
 
 
-def fetch_source_text(url: str, max_chars: int = 4500) -> str:
+def fetch_source_text(url: str, max_chars: int = 4500, fallback_text: str = "") -> str:
     try:
         response = safe_get_public_url(url, timeout=12)
         try:
             text = trafilatura.extract(response.text, include_comments=False, include_tables=True, favor_precision=True) or ""
-            return text.strip()[:max_chars]
+            if text.strip():
+                return text.strip()[:max_chars]
         finally:
             response.close()
     except Exception:
-        return ""
+        pass
+    # Preserve the search engine's short result summary when the publisher
+    # blocks extraction or the article is behind a paywall.
+    return (fallback_text or "").strip()[:1200]
 
 
 def collect_evidence(
@@ -173,5 +185,6 @@ def collect_evidence(
 
     for index, item in enumerate(picked, 1):
         item["id"] = f"S{index}"
-        item["text"] = fetch_source_text(item["url"])
+        item["text"] = fetch_source_text(item["url"], fallback_text=item.get("snippet", ""))
+        item["text_origin"] = "검색 결과 요약" if item.get("snippet") and item["text"] == item.get("snippet", "").strip()[:1200] else ("본문" if item["text"] else "본문 확보 실패")
     return picked
