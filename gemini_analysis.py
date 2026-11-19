@@ -115,7 +115,7 @@ def _generate_json(client: genai.Client, model: str, prompt: str, schema: dict, 
 
 def extract_claims(client: genai.Client, article: dict, model: str = DEFAULT_MODEL) -> dict:
     prompt = f"""당신은 기업 관련 뉴스의 사실 주장을 분리하는 조사 보조자입니다.
-기사에서 검증 가능한 구체적 사실 주장을 최대 4개 추출하세요. 의견·평가·전망은 사실 주장과 구분하세요. 기사에 없는 주장을 추가하지 마세요. 각 사실 주장에는 GDELT 뉴스 검색에 사용할 짧고 구체적인 검색어를 제안하세요. 기업명을 자동 식별하세요.
+기사에서 검증 가능한 구체적 사실 주장을 최대 4개 추출하세요. 의견·평가·전망은 사실 주장과 구분하세요. 기사에 없는 주장을 추가하지 마세요. 각 사실 주장에는 기업명, 시점(연도·분기), 지표명, 핵심 수치가 포함된 짧고 구체적인 검색어를 제안하세요. 검색어는 특정 검색엔진에 한정하지 말고 과거 보도자료와 공시도 찾을 수 있도록 작성하세요. 기업명을 자동 식별하세요.
 제목: {article.get('title','')}
 URL: {article.get('url','')}
 본문:
@@ -132,7 +132,7 @@ URL: {article.get('url','')}
 
 def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, sources: list[dict], model: str = DEFAULT_MODEL) -> dict:
     evidence_block = "\n\n".join(
-        f"[{s['id']}] 제목: {s['title']}\n도메인: {s['domain']} / 게시·수집 시각: {s['date']}\nURL: {s['url']}\n본문 발췌: {(s.get('text') or '본문 자동 추출 실패. 제목과 메타정보만 확보됨.')[:1500]}"
+        f"[{s['id']}] 제목: {s['title']}\n도메인: {s['domain']} / 게시·수집 시각: {s['date']}\n검색어: {s.get('search_query', '')}\nURL: {s['url']}\n자료 유형: {s.get('text_origin', '확인되지 않음')}\n본문·검색 요약: {(s.get('text') or '본문 자동 추출 실패. 제목과 메타정보만 확보됨.')[:1500]}"
         for s in sources
     ) or "검색 결과를 확보하지 못함. 검증 근거 없음."
 
@@ -143,6 +143,8 @@ def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, 
 - 기사에 적힌 주장과 외부 근거를 각각 대조하고, 검색 결과가 없으면 거짓이 아니라 평가 보류로 처리하세요.
 - 서로 다른 도메인이라도 동일 보도자료의 전재일 수 있습니다. 독립성이 확인되지 않으면 교차 검증 점수를 높이지 마세요.
 - 제공된 S1~S8 외의 출처 ID, URL, 숫자, 사실을 만들지 마세요.
+- 자료 유형이 '검색 결과 요약'이면 이를 기사 전문처럼 취급하지 말고, 요약에 실제로 명시된 정보만 제한적으로 사용하세요.
+- 각 주장을 뒷받침하는 자료가 있으면 source_ids에 해당 출처 ID를 반드시 연결하세요. 자료가 관련 없거나 근거가 되지 않으면 연결하지 마세요.
 - 주가·시가총액 변화와 기업의 실제 재무 손실을 구분하세요. 시간상 동시에 발생했다는 이유로 인과관계를 단정하지 마세요.
 - 점수 항목은 1.0(충족), 0.5(일부 충족), 0.0(확인된 근거상 미충족), null(정보 부족으로 평가 불가) 중 하나입니다. 점수는 기사가 참일 확률이 아닙니다.
 - 확인되지 않은 항목은 null로 두고 이유를 notes에 적으세요.
@@ -189,16 +191,24 @@ def run_full_analysis(api_key: str, article: dict, model: str = DEFAULT_MODEL, p
     queries = []
     for claim in extracted.get("claims", []):
         if claim.get("type") in ("사실 주장", "해석"):
-            query = str(claim.get("search_query", "")).strip()
-            if query:
-                queries.append(query)
+            # Search both the model's focused query and the original claim.
+            # The latter helps recover exact figures/phrases omitted from the query.
+            for candidate in (claim.get("search_query", ""), claim.get("claim", "")):
+                query = str(candidate).strip()
+                if query and query not in queries:
+                    queries.append(query)
     if not queries and extracted.get("companies"):
         queries = [str(extracted["companies"][0])]
 
     if progress:
         progress("② GDELT에서 관련 뉴스 자료를 수집하고 있어요.")
     from evidence_search import collect_evidence
-    sources = collect_evidence(queries, article.get("url", ""), progress=progress)
+    sources = collect_evidence(
+        queries,
+        article.get("url", ""),
+        progress=progress,
+        article_date=article.get("date", ""),
+    )
 
     if progress:
         progress("③ Gemini가 기사 주장과 수집된 근거를 대조하고 있어요.")
