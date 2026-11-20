@@ -154,7 +154,11 @@ if st.session_state.get("tc_result"):
                 st.metric("타당성·균형성", f"{val['score']:.1f}/5.0")
             for key, label in VALIDITY_LABELS.items():
                 st.write(f"**{label}:** {result.get('validity', {}).get(key) if result.get('validity', {}).get(key) is not None else '평가 불가'}")
-                st.caption(result.get("validity_notes", {}).get(key, ""))
+                validity_evidence = result.get("validity_evidence", {}).get(key, {})
+                article_quote = validity_evidence.get("article_quote", "") if isinstance(validity_evidence, dict) else ""
+                if article_quote:
+                    st.markdown(f"> “{article_quote}”")
+                st.caption(validity_evidence.get("analysis", "") if isinstance(validity_evidence, dict) and validity_evidence.get("analysis") else result.get("validity_notes", {}).get(key, ""))
         st.caption("점수는 기사가 참일 확률이 아니라, 설정한 평가 기준을 충족하는 정도를 나타내는 점검 지수입니다.")
     with tab3:
         st.write(f"**기사 어조:** {result.get('tone', '판단 보류')}")
