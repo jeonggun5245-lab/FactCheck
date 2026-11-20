@@ -62,7 +62,7 @@ def build_report(article: dict, result: dict) -> str:
         lines += [f"### {claim.get('claim', '')}", f"- 유형: {claim.get('type', '')}", f"- 판정: {claim.get('verdict', '')}", f"- 근거: {claim.get('reason', '')}", f"- 출처 ID: {', '.join(claim.get('source_ids', []))}"]
         for quote in claim.get("evidence_quotes", []):
             quote_source = next((s for s in result.get("sources", []) if s.get("id") == quote.get("source_id")), {})
-            quote_kind = "기사 본문" if quote_source.get("text_origin") == "본문" else "검색 결과 요약(탐색 단서)"
+            quote_kind = "기사 본문" if quote_source.get("text_origin") == "본문" else "검색 결과 요약(제한적 근거 · 본문 미확보)"
             lines.append(f"> [{quote_kind} · {quote.get('source_id', '')}] {quote.get('quote', '')}")
         lines.append("")
     rel = result.get("reliability_score", {})
@@ -126,7 +126,7 @@ if st.session_state.get("tc_result"):
             for quote in claim.get("evidence_quotes", []):
                 st.markdown(f"> “{quote['quote']}”")
                 quote_source = next((s for s in result.get("sources", []) if s.get("id") == quote["source_id"]), {})
-                quote_kind = "기사 본문에서 확인한 문장" if quote_source.get("text_origin") == "본문" else "검색 결과 요약에서 확인한 문구(검증 근거가 아닌 탐색 단서)"
+                quote_kind = "기사 본문에서 확인한 문장" if quote_source.get("text_origin") == "본문" else "검색 결과 요약에서 확인한 보도 내용(본문 미확보 · 제한적 근거)"
                 st.caption(f"{quote['source_id']} · {quote_kind} · {quote.get('explanation', '')}")
             linked = [s for s in result.get("sources", []) if s.get("id") in claim.get("source_ids", [])]
             if linked:
