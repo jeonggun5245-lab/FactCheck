@@ -35,7 +35,12 @@ FINAL_SCHEMA = {
             "verdict": {"type": "STRING", "enum": ["확인", "일부 확인·맥락 누락", "근거 부족", "허위·반박됨", "평가 보류", "의견·전망"]},
             "reason": {"type": "STRING"},
             "source_ids": {"type": "ARRAY", "items": {"type": "STRING"}},
-        }, "required": ["claim", "type", "verdict", "reason", "source_ids"]}},
+            "evidence_quotes": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "source_id": {"type": "STRING"},
+                "quote": {"type": "STRING"},
+                "explanation": {"type": "STRING"},
+            }, "required": ["source_id", "quote", "explanation"]}},
+        }, "required": ["claim", "type", "verdict", "reason", "source_ids", "evidence_quotes"]}},
         "reliability": {"type": "OBJECT", "properties": {key: {"type": ["NUMBER", "NULL"], "enum": [0, 0.5, 1, None]} for key in SCORE_KEYS}, "required": SCORE_KEYS},
         "validity": {"type": "OBJECT", "properties": {key: {"type": ["NUMBER", "NULL"], "enum": [0, 0.5, 1, None]} for key in VALIDITY_KEYS}, "required": VALIDITY_KEYS},
         "reliability_notes": {"type": "OBJECT", "properties": {key: {"type": "STRING"} for key in SCORE_KEYS}, "required": SCORE_KEYS},
@@ -150,7 +155,12 @@ def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, 
 - 출처에 핵심 수치가 없다면 그 수치를 확인하는 근거로 사용하지 마세요. 자료 유형이 '검색 결과 요약'이면 요약에 명시된 내용까지만 근거로 삼으세요.
 - 출처가 주장의 일부만 뒷받침하면 확인된 부분과 확인되지 않은 부분을 reason에서 구분하고, 판정도 그 범위에 맞추세요.
 - 출처를 연결할 때 reason에 해당 출처 ID(S1 등), 실제 제목 또는 핵심 내용, 확인된 날짜·수치를 구체적으로 적으세요. 출처에 없는 내용을 추정하거나 인용하지 마세요.
-- 관련 출처가 없으면 source_ids를 빈 배열로 두고 평가 보류 사유를 명시하세요.
+- 각 주장마다 evidence_quotes에 근거로 삼은 문장을 원문 그대로 넣으세요. 문장은 제공된 출처 text 안에 실제로 존재해야 하며, 문장을 다듬거나 합치거나 번역하지 마세요. 원문에서 정확히 찾을 수 없는 인용은 넣지 마세요.
+- 검색 결과 요약만 있는 경우 그 요약 문장만 인용할 수 있으며, 본문에서 확인한 것처럼 표현하지 마세요.
+- 관련 출처가 없으면 source_ids와 evidence_quotes를 빈 배열로 두고 평가 보류 사유를 명시하세요.
+- 0.5는 해당 평가 기준을 일부 충족한다는 긍정적 근거가 있을 때만 사용하세요. 근거가 없거나 자료가 부족하면 0.5로 채우지 말고 null로 두세요.
+- 관찰된 시장 변화, 소비자·투자자 영향, 기업 영향은 제공 자료에 명시된 내용만 쓰세요. 추정 가능한 일반론은 '가능성'이라고 구분하고, 자료에서 확인되지 않은 시장 언급량·매출·주가 변화를 사실처럼 쓰지 마세요.
+- companies에는 기사 본문이나 제공된 출처에 실제 등장하는 기업만 포함하세요.
 - 주가·시가총액 변화와 기업의 실제 재무 손실을 구분하세요. 시간상 동시에 발생했다는 이유로 인과관계를 단정하지 마세요.
 - 점수 항목은 1.0(충족), 0.5(일부 충족), 0.0(확인된 근거상 미충족), null(정보 부족으로 평가 불가) 중 하나입니다. 점수는 기사가 참일 확률이 아닙니다.
 - 확인되지 않은 항목은 null로 두고 이유를 notes에 적으세요.
@@ -172,12 +182,41 @@ URL: {article.get('url','')}
 출력 전 각 source_id가 실제 제공된 자료인지, 해당 자료에 주장의 핵심 사실이나 수치가 실제로 포함되어 있는지 확인하세요. 근거가 없거나 간접적이면 억지로 연결하지 말고 평가 보류로 남기세요. 각 주장에 대해 판정, 구체적인 이유, 사용한 출처 ID를 작성하고, 종합 평가에서는 근거의 범위와 한계를 명시하세요.
 """
     data = _generate_json(client, model, prompt, FINAL_SCHEMA, 5000)
-    valid_ids = {s["id"] for s in sources}
+    source_map = {s["id"]: s for s in sources}
     for claim in data.get("claims", []):
-        if isinstance(claim, dict):
-            claim["source_ids"] = clean_source_ids(claim.get("source_ids"), valid_ids)
+        if not isinstance(claim, dict):
+            continue
+        valid_quotes = []
+        for item in claim.get("evidence_quotes", []) if isinstance(claim.get("evidence_quotes"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            source = source_map.get(str(item.get("source_id", "")))
+            quote = str(item.get("quote", "")).strip()
+            source_text = str(source.get("text", "")) if source else ""
+            if source and quote and quote in source_text:
+                valid_quotes.append({
+                    "source_id": source["id"],
+                    "quote": quote,
+                    "explanation": str(item.get("explanation", "")),
+                })
+        claim["evidence_quotes"] = valid_quotes
+        # A source is linked to a claim only when an exact supporting excerpt
+        # can be located in the collected text.
+        claim["source_ids"] = list(dict.fromkeys(q["source_id"] for q in valid_quotes))
+        if not claim["source_ids"] and claim.get("verdict") in ("확인", "일부 확인·맥락 누락"):
+            claim["verdict"] = "평가 보류"
+            claim["reason"] = "제공된 외부 자료에서 주장을 직접 뒷받침하는 원문 문장을 확인하지 못했습니다. 따라서 현재 자료만으로는 판정을 유지할 수 없습니다."
     data["reliability"] = clamp_score_map(data.get("reliability"), SCORE_KEYS)
     data["validity"] = clamp_score_map(data.get("validity"), VALIDITY_KEYS)
+    # Do not turn missing evidence into a middling score. These dimensions
+    # cannot be assessed from a lone search-result snippet.
+    full_text_sources = [s for s in sources if s.get("text_origin") == "본문" and s.get("text")]
+    distinct_publishers = {str(s.get("domain", "")).lower() for s in full_text_sources if s.get("domain")}
+    if not full_text_sources:
+        for key in ("evidence_credibility", "factual_accuracy", "timeliness_context", "independent_corroboration"):
+            data["reliability"][key] = None
+    if len(distinct_publishers) < 2:
+        data["reliability"]["independent_corroboration"] = None
     data["reliability_score"] = score_index(data["reliability"], SCORE_KEYS)
     data["validity_score"] = score_index(data["validity"], VALIDITY_KEYS)
     data["sources"] = sources
