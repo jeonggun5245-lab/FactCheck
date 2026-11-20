@@ -145,7 +145,7 @@ def collect_evidence(
     all_items: list[dict] = []
     seen_urls = {article_url} if article_url else set()
     # Keep more claim-specific queries so later claims are not silently omitted.
-    unique_queries = list(dict.fromkeys(q.strip() for q in search_queries if isinstance(q, str) and q.strip()))[:6]
+    unique_queries = list(dict.fromkeys(q.strip() for q in search_queries if isinstance(q, str) and q.strip()))[:8]
     date_window = _article_date_window(article_date)
 
     # GDELT DOC ArtList is limited to recent coverage. Use it for recent articles only.
@@ -174,20 +174,20 @@ def collect_evidence(
                 seen_urls.add(item["url"])
                 all_items.append(item)
         if idx < len(unique_queries) - 1:
-            time.sleep(5.2)
+            time.sleep(1.2)
 
-    picked: list[dict] = []
-    domains: set[str] = set()
-    for item in all_items:
-        domain = item.get("domain", "")
-        if domain and domain not in domains:
-            domains.add(domain)
-            picked.append(item)
-        if len(picked) >= max_sources:
-            break
-
+    # Keep multiple results from the same publisher when they are relevant.
+    picked = all_items[:max_sources]
     for index, item in enumerate(picked, 1):
         item["id"] = f"S{index}"
-        item["text"] = fetch_source_text(item["url"], fallback_text=item.get("snippet", ""))
-        item["text_origin"] = "검색 결과 요약" if item.get("snippet") and item["text"] == item.get("snippet", "").strip()[:1200] else ("본문" if item["text"] else "본문 확보 실패")
+        extracted_text = fetch_source_text(item["url"], fallback_text="")
+        if extracted_text:
+            item["text"] = extracted_text
+            item["text_origin"] = "본문"
+        elif item.get("snippet"):
+            item["text"] = item["snippet"].strip()[:1200]
+            item["text_origin"] = "검색 결과 요약"
+        else:
+            item["text"] = ""
+            item["text_origin"] = "본문 확보 실패"
     return picked
