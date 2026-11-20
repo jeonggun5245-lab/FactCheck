@@ -117,6 +117,9 @@ if st.session_state.get("tc_result"):
             st.markdown(f"**{index}. {claim.get('claim', '주장 미확인')}**")
             st.write(f"유형: {claim.get('type', '미분류')}　|　판정: **{claim.get('verdict', '평가 보류')}**")
             st.write(claim.get("reason", "근거 설명 없음"))
+            for quote in claim.get("evidence_quotes", []):
+                st.markdown(f"> “{quote['quote']}”")
+                st.caption(f"{quote['source_id']} · 원문에서 정확히 일치하는 문장 · {quote.get('explanation', '')}")
             linked = [s for s in result.get("sources", []) if s.get("id") in claim.get("source_ids", [])]
             if linked:
                 for source in linked:
@@ -151,7 +154,9 @@ if st.session_state.get("tc_result"):
         st.write(result.get("bias_explanation", ""))
         st.divider()
         st.subheader("기업·정보 이용자 영향")
-        st.write("**관련 기업:** " + (", ".join(result.get("companies", [])) or "자동 식별되지 않음"))
+        article_and_sources = " ".join([str(article.get("body", ""))] + [str(s.get("text", "")) for s in result.get("sources", [])])
+        grounded_companies = [name for name in result.get("companies", []) if isinstance(name, str) and name and name in article_and_sources]
+        st.write("**관련 기업:** " + (", ".join(grounded_companies) or "자료에서 확인된 기업명 없음"))
         st.write("**소비자·투자자 영향:** " + str(result.get("audience_impact", "자료 부족")))
         st.write("**기업 영향:** " + str(result.get("corporate_impact", "자료 부족")))
         st.write("**관찰된 주가·시가총액 변화:** " + str(result.get("observed_market_change", "확인되지 않음")))
