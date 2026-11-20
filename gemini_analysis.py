@@ -45,6 +45,10 @@ FINAL_SCHEMA = {
         "validity": {"type": "OBJECT", "properties": {key: {"type": ["NUMBER", "NULL"], "enum": [0, 0.5, 1, None]} for key in VALIDITY_KEYS}, "required": VALIDITY_KEYS},
         "reliability_notes": {"type": "OBJECT", "properties": {key: {"type": "STRING"} for key in SCORE_KEYS}, "required": SCORE_KEYS},
         "validity_notes": {"type": "OBJECT", "properties": {key: {"type": "STRING"} for key in VALIDITY_KEYS}, "required": VALIDITY_KEYS},
+        "validity_evidence": {"type": "OBJECT", "properties": {key: {"type": "OBJECT", "properties": {
+            "article_quote": {"type": "STRING"},
+            "analysis": {"type": "STRING"},
+        }, "required": ["article_quote", "analysis"]} for key in VALIDITY_KEYS}, "required": VALIDITY_KEYS},
         "tone": {"type": "STRING", "enum": ["긍정", "부정", "중립", "복합", "판단 보류"]},
         "bias_signals": {"type": "ARRAY", "items": {"type": "STRING"}},
         "bias_explanation": {"type": "STRING"},
@@ -56,7 +60,7 @@ FINAL_SCHEMA = {
         "causality_assessment": {"type": "STRING"},
         "limitations": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
-    "required": ["summary", "claims", "reliability", "validity", "reliability_notes", "validity_notes", "tone", "bias_signals", "bias_explanation", "companies", "audience_impact", "corporate_impact", "observed_market_change", "documented_financial_impact", "causality_assessment", "limitations"],
+    "required": ["summary", "claims", "reliability", "validity", "reliability_notes", "validity_notes", "validity_evidence", "tone", "bias_signals", "bias_explanation", "companies", "audience_impact", "corporate_impact", "observed_market_change", "documented_financial_impact", "causality_assessment", "limitations"],
 }
 
 
@@ -181,6 +185,13 @@ def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, 
   4) 관련 반대 근거·당사자 입장: 기사 주장의 신뢰성에 영향을 줄 수 있는 기업·전문가·당사자의 설명과 대안 원인을 다루었는지 평가. 1.0은 주요 반론·대안 설명을 균형 있게 다룬 경우. 0.5는 당사자 입장 또는 대안 설명 중 일부만 다룬 경우. 0.0은 인과관계나 논쟁적 주장을 제시하면서 관련 반론·대안 설명을 전혀 다루지 않은 경우. 반론이 본질적으로 필요하지 않은 단순 사실 전달 기사라면 그 이유를 notes에 밝히고 null 처리할 수 있음.
   5) 사실과 의견의 구분: 수치·사건·발언 같은 검증 가능한 사실과 기자의 평가·추정·홍보성 표현을 구분했는지 평가. 1.0은 사실·해석·의견을 명확히 구분한 경우. 0.5는 일부 평가적 표현이 사실처럼 제시되거나 인용과 사실 서술이 혼재한 경우. 0.0은 의견·추측을 검증된 사실처럼 단정한 경우.
 - 타당성 각 항목의 notes는 최소 2문장으로 작성하세요. 첫 문장에는 기사에서 확인한 구체적 근거를 인용하거나 요약하고, 둘째 문장에는 그 근거가 점수에 미친 영향을 설명하세요. 자료에 없는 내용을 만들어 점수를 정당화하지 마세요.
+- validity_evidence의 각 항목 article_quote에는 제출된 기사 본문에서 그대로 복사한 문장 1개 이상을 넣으세요. 기사 본문에 해당 근거가 없다면 빈 문자열로 두세요. analysis에는 그 문장이 평가 기준과 어떤 관계인지, 왜 해당 점수인지 구체적으로 설명하세요. 다른 항목과 같은 문장을 기계적으로 반복하지 마세요.
+- 타당성 항목별로 확인할 구체 요소:
+  * logic: 기사에서 사실 A로부터 결론 B를 도출하는 문장을 찾아, 중간 추론과 인과관계 입증 여부를 평가하세요.
+  * headline_match: 제목의 핵심 표현을 본문에서 실제로 설명·입증하는 문장을 찾아 제목의 과장·생략 여부를 평가하세요.
+  * context: 수치의 기준 시점·비교 기간·비교 대상·산정 방식·다른 시장 요인을 기사에서 제시했는지 확인하세요. 무엇이 빠졌는지 구체적으로 적으세요.
+  * counterevidence: 기사에 기업·당사자 입장, 전문가 견해, 다른 원인 또는 반대 자료가 실제로 있는지 확인하세요. 단순히 '반대 의견이 없다'고 쓰지 말고 필요한 반대 설명이 무엇인지와 기사에 포함됐는지 구분하세요.
+  * fact_opinion_distinction: '급등', '효과', '성공'처럼 평가가 개입된 표현과 검증 가능한 수치·발언을 구분해 실제 표현을 근거로 평가하세요.
 - null은 해당 항목을 판단할 자료가 정말 없을 때만 사용하세요. 근거가 제한적이지만 일부 판단이 가능하면 0.5, 자료에 해당 요소가 없다는 점을 확인할 수 있으면 0.0을 사용하세요. '검색 결과 요약'이라는 이유만으로 null을 주지 마세요.
 - 편향 신호는 관찰 가능한 표현과 정보 선택에 한정하며 작성자의 의도를 단정하지 마세요.
 - 기업과 소비자·투자자에게 미칠 수 있는 영향은 가능성과 확인된 피해를 구분하세요.
@@ -295,6 +306,26 @@ URL: {article.get('url','')}
 
     data["reliability"] = clamp_score_map(data.get("reliability"), SCORE_KEYS)
     data["validity"] = clamp_score_map(data.get("validity"), VALIDITY_KEYS)
+    # Only retain purported article quotations that exactly occur in the submitted article.
+    article_body = str(article.get("body", ""))
+    validity_evidence = data.get("validity_evidence", {})
+    if not isinstance(validity_evidence, dict):
+        validity_evidence = {}
+    for key in VALIDITY_KEYS:
+        item = validity_evidence.get(key, {})
+        if not isinstance(item, dict):
+            item = {}
+        quote = str(item.get("article_quote", "")).strip()
+        if quote and quote not in article_body:
+            quote = ""
+        validity_evidence[key] = {
+            "article_quote": quote,
+            "analysis": str(item.get("analysis", "")),
+        }
+        note = str(data.get("validity_notes", {}).get(key, ""))
+        if not note.strip() and validity_evidence[key]["analysis"]:
+            data["validity_notes"][key] = validity_evidence[key]["analysis"]
+    data["validity_evidence"] = validity_evidence
     # Search snippets are still evidence when their contents explicitly
     # support a claim. Assess the collected source set, not only full texts.
     matched_sources = [
