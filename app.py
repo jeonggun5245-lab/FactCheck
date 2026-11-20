@@ -191,7 +191,14 @@ if st.session_state.get("tc_result"):
         if result.get("sources"):
             for source in result["sources"]:
                 st.markdown(f"**{source['id']} · [{source['title']}]({source['url']})**")
-                st.caption(f"{source['domain']} · {source['date']} · 본문 추출 {'성공' if source.get('text') else '실패(제목·메타정보만 확보)'}")
+                st.caption(f"{source.get('domain', '출처 미상')} · {source.get('date', '날짜 미상')} · 자료 유형: {source.get('text_origin', '확인되지 않음')} · 검색어: {source.get('search_query', '확인되지 않음')}")
+                excerpt = (source.get("text") or "").strip()
+                if excerpt:
+                    st.markdown("**실제로 확보한 자료 내용**")
+                    st.write(excerpt[:3000])
+                else:
+                    st.warning("제목과 링크만 확보했으며, 본문이나 검색 요약은 확보하지 못했습니다.")
+                st.divider()
         else:
             st.warning("관련 자료를 확보하지 못했습니다. 이 경우 사실 검증은 제한적입니다.")
         st.markdown("검색 데이터: [GDELT Project](https://www.gdeltproject.org/)")
