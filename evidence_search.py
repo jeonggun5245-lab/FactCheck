@@ -69,9 +69,11 @@ def search_google_news(query: str, maxrecords: int = 5, date_window: tuple[str, 
         search_text += f" after:{start} before:{end}"
     params = {
         "q": search_text,
-        "hl": "en-US",
-        "gl": "US",
-        "ceid": "US:en",
+        # The project primarily analyzes Korean corporate news.
+        # Search Korean-language coverage in Korea rather than defaulting to US English.
+        "hl": "ko",
+        "gl": "KR",
+        "ceid": "KR:ko",
     }
     response = requests.get(
         f"{GOOGLE_NEWS_RSS}?{urlencode(params)}",
@@ -109,8 +111,8 @@ def search_google_news(query: str, maxrecords: int = 5, date_window: tuple[str, 
             "url": final_url,
             "domain": domain.removeprefix("www."),
             "date": published,
-            "language": "en",
-            "country": "US",
+            "language": "ko",
+            "country": "KR",
             "snippet": snippet[:1200],
             "search_query": query,
         })
@@ -142,7 +144,8 @@ def collect_evidence(
 ) -> list[dict]:
     all_items: list[dict] = []
     seen_urls = {article_url} if article_url else set()
-    unique_queries = list(dict.fromkeys(q.strip() for q in search_queries if isinstance(q, str) and q.strip()))[:3]
+    # Keep more claim-specific queries so later claims are not silently omitted.
+    unique_queries = list(dict.fromkeys(q.strip() for q in search_queries if isinstance(q, str) and q.strip()))[:6]
     date_window = _article_date_window(article_date)
 
     # GDELT DOC ArtList is limited to recent coverage. Use it for recent articles only.
