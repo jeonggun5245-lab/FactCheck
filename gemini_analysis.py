@@ -149,6 +149,10 @@ def analyze_with_evidence(client: genai.Client, article: dict, extracted: dict, 
 - 서로 다른 도메인이라도 동일 보도자료의 전재일 수 있습니다. 독립성이 확인되지 않으면 교차 검증 점수를 높이지 마세요.
 - 제공된 S1~S8 외의 출처 ID, URL, 숫자, 사실을 만들지 마세요.
 - 자료 유형이 '검색 결과 요약'이면 이를 기사 전문처럼 취급하지 말고, 요약에 실제로 명시된 정보만 제한적으로 사용하세요.
+- 자료 유형이 '검색 결과 요약'이어도 검증 자료로 활용할 수 있습니다. 다만 기사 전문과 동일한 깊이의 근거로 취급하지 말고, 요약에 구체적으로 명시된 사실·수치·날짜는 직접적인 보도 내용으로 대조하세요.
+- 서로 다른 언론사 2곳 이상이 동일한 구체적 사실이나 수치를 명시하면 '복수 매체의 보도 일치'로 인정하세요. 단, 동일 보도자료 전재 여부나 공통 취재원을 확인할 수 없으면 완전한 독립 검증이라고 단정하지 말고 교차 확인 점수를 0.5로 평가할 수 있습니다.
+- 검색 요약이라는 이유만으로 사실관계 정확성, 근거 신뢰성, 시의성, 맥락 점수를 null로 만들지 마세요. 수집된 자료에 날짜·수치·사실이 명시되어 있고 복수 매체가 일치하면 실제로 평가 가능한 항목을 평가하세요.
+- 자료가 없어서 평가 불가능한 것과 자료가 여러 개 있으나 독립성·세부 산정 근거가 제한적인 것은 구분하세요. 후자는 무조건 평가 보류가 아니라 0.5 등 부분 충족으로 평가하세요.
 [출처 연결 규칙]
 - 각 주장의 대상·시점·수치·사건을 나누어 출처와 대조하세요.
 - 제목이나 같은 기업을 언급한다는 이유만으로 출처를 연결하지 마세요. 핵심 사실을 실제로 뒷받침하는 출처 ID만 source_ids에 넣으세요.
@@ -183,9 +187,29 @@ URL: {article.get('url','')}
 """
     data = _generate_json(client, model, prompt, FINAL_SCHEMA, 5000)
     source_map = {s["id"]: s for s in sources}
+
+    def relevant_excerpt(claim_text: str, source_text: str, limit: int = 520) -> str:
+        import re
+        raw_terms = re.findall(r"[가-힣A-Za-z0-9]+", claim_text.lower())
+        stop = {"있다", "했다", "한다", "대한", "관련", "통해", "이후", "에서", "으로", "하며", "하고", "및", "또는", "대한"}
+        terms = {term.replace(",", "") for term in raw_terms if len(term) >= 2 and term not in stop}
+        if not source_text.strip():
+            return ""
+        sentences = [x.strip() for x in re.split(r"(?<=[.!?。])\\s+|(?<=다)\\s+", source_text) if x.strip()]
+        if not sentences:
+            sentences = [source_text.strip()]
+        def score(sentence: str) -> int:
+            normalized = sentence.lower().replace(",", "")
+            return sum(1 for term in terms if term in normalized)
+        ranked = sorted(enumerate(sentences), key=lambda pair: (score(pair[1]), -pair[0]), reverse=True)
+        best = ranked[0][1]
+        return best[:limit] if score(best) else source_text.strip()[:limit]
+
     for claim in data.get("claims", []):
         if not isinstance(claim, dict):
             continue
+        claim_text = str(claim.get("claim", ""))
+        requested_ids = clean_source_ids(claim.get("source_ids"), set(source_map))
         valid_quotes = []
         for item in claim.get("evidence_quotes", []) if isinstance(claim.get("evidence_quotes"), list) else []:
             if not isinstance(item, dict):
@@ -199,60 +223,87 @@ URL: {article.get('url','')}
                     "quote": quote,
                     "explanation": str(item.get("explanation", "")),
                 })
+
+        # If Gemini selected a relevant source but omitted its quote, attach
+        # an exact excerpt from the collected text rather than leaving the
+        # user with a bare source ID.
+        quoted_ids = {item["source_id"] for item in valid_quotes}
+        for source_id in requested_ids:
+            source = source_map[source_id]
+            source_text = str(source.get("text", "")).strip()
+            if source_text and source_id not in quoted_ids:
+                excerpt = relevant_excerpt(claim_text, source_text)
+                if excerpt:
+                    valid_quotes.append({
+                        "source_id": source_id,
+                        "quote": excerpt,
+                        "explanation": "수집된 출처 내용 중 주장과 관련된 문구를 원문 그대로 발췌했습니다.",
+                    })
+                    quoted_ids.add(source_id)
+
+        # If the model failed to connect sources, recover clearly matching
+        # sources by deterministic word/number overlap. This is a retrieval
+        # aid; the excerpt itself remains verbatim source text.
+        if not valid_quotes:
+            import re
+            raw_terms = re.findall(r"[가-힣A-Za-z0-9]+", claim_text.lower())
+            stop = {"있다", "했다", "한다", "대한", "관련", "통해", "이후", "에서", "으로", "하며", "하고", "및", "또는"}
+            terms = {term.replace(",", "") for term in raw_terms if len(term) >= 2 and term not in stop}
+            ranked_sources = []
+            for source in sources:
+                source_text = str(source.get("text", "")).strip()
+                searchable = (str(source.get("title", "")) + " " + source_text).lower().replace(",", "")
+                overlap = sum(1 for term in terms if term in searchable)
+                if source_text and overlap >= 2:
+                    ranked_sources.append((overlap, source))
+            for _, source in sorted(ranked_sources, key=lambda pair: pair[0], reverse=True)[:4]:
+                excerpt = relevant_excerpt(claim_text, str(source.get("text", "")))
+                if excerpt:
+                    valid_quotes.append({
+                        "source_id": source["id"],
+                        "quote": excerpt,
+                        "explanation": "주장과 겹치는 핵심어가 포함된 수집 자료의 원문 발췌입니다.",
+                    })
+
         claim["evidence_quotes"] = valid_quotes
-        # Search-result snippets are discovery clues, not article-body evidence.
-        claim["source_ids"] = list(dict.fromkeys(q["source_id"] for q in valid_quotes))
-        body_quote_ids = {
-            q["source_id"] for q in valid_quotes
-            if source_map.get(q["source_id"], {}).get("text_origin") == "본문"
-        }
-        snippet_quote_ids = {
-            q["source_id"] for q in valid_quotes
-            if source_map.get(q["source_id"], {}).get("text_origin") == "검색 결과 요약"
-        }
-        claim["body_evidence_ids"] = sorted(body_quote_ids)
-        claim["snippet_only_ids"] = sorted(snippet_quote_ids)
-        if not body_quote_ids and claim.get("verdict") == "확인":
-            if snippet_quote_ids:
-                claim["verdict"] = "일부 확인·맥락 누락"
-                claim["reason"] = (
-                    "검색 결과 제목·요약에서 주장의 일부를 시사하는 문구는 확인했지만, "
-                    "언론사 기사 본문이나 독립적인 원자료를 확인하지 못했습니다. "
-                    "따라서 제목 수준의 단서만으로 전체 주장을 '확인'할 수 없습니다. "
-                    + str(claim.get("reason", ""))
-                )
-            else:
-                claim["verdict"] = "평가 보류"
-                claim["reason"] = "주장을 직접 뒷받침하는 출처 본문 문장을 확보하지 못해 판정을 보류합니다."
-        elif not claim["source_ids"] and claim.get("verdict") in ("확인", "일부 확인·맥락 누락"):
+        claim["source_ids"] = list(dict.fromkeys(item["source_id"] for item in valid_quotes))
+        claim["body_evidence_ids"] = sorted({
+            item["source_id"] for item in valid_quotes
+            if source_map.get(item["source_id"], {}).get("text_origin") == "본문"
+        })
+        claim["snippet_only_ids"] = sorted({
+            item["source_id"] for item in valid_quotes
+            if source_map.get(item["source_id"], {}).get("text_origin") == "검색 결과 요약"
+        })
+        if not claim["source_ids"] and claim.get("verdict") in ("확인", "일부 확인·맥락 누락"):
             claim["verdict"] = "평가 보류"
-            claim["reason"] = "제공된 외부 자료에서 주장을 직접 뒷받침하는 문장을 확인하지 못했습니다."
+            claim["reason"] = "수집된 자료에서 이 주장과 연결할 수 있는 구체적인 문구를 찾지 못했습니다."
+
     data["reliability"] = clamp_score_map(data.get("reliability"), SCORE_KEYS)
     data["validity"] = clamp_score_map(data.get("validity"), VALIDITY_KEYS)
-    # Do not turn missing evidence into a middling score. These dimensions
-    # cannot be assessed from a lone search-result snippet.
-    full_text_sources = [s for s in sources if s.get("text_origin") == "본문" and s.get("text")]
-    distinct_publishers = {str(s.get("domain", "")).lower() for s in full_text_sources if s.get("domain")}
-    if not full_text_sources:
-        for key in ("evidence_credibility", "factual_accuracy", "timeliness_context", "independent_corroboration"):
-            data["reliability"][key] = None
+    # Search snippets are still evidence when their contents explicitly
+    # support a claim. Assess the collected source set, not only full texts.
+    matched_sources = [
+        source_map[source_id]
+        for claim in data.get("claims", []) if isinstance(claim, dict)
+        for source_id in claim.get("source_ids", [])
+        if source_id in source_map
+    ]
+    distinct_publishers = {
+        str(source.get("domain", "")).lower()
+        for source in matched_sources if source.get("domain")
+    }
     if len(distinct_publishers) < 2:
         data["reliability"]["independent_corroboration"] = None
-    # Internal article qualities can be assessed from the submitted article;
-    # logic, context and counterevidence require substantive external material.
-    if not full_text_sources:
-        for key in ("logic", "context", "counterevidence"):
-            data["validity"][key] = None
-            data["validity_notes"][key] = (
-                "외부 출처의 기사 본문을 확보하지 못해 주장과 근거의 논리, "
-                "시장·사건 맥락, 반대 근거를 대조할 수 없습니다. 점수 산정에서 제외했습니다."
-            )
-    if not full_text_sources:
-        data["reliability_notes"]["evidence_credibility"] = "검색 결과 요약만 확보되어 원문 근거의 신뢰성을 평가할 수 없습니다."
-        data["reliability_notes"]["factual_accuracy"] = "주요 수치와 사실을 원문 또는 1차 자료로 대조하지 못해 평가할 수 없습니다."
-        data["reliability_notes"]["timeliness_context"] = "게시 시점만으로 사건 발생 시점과 시장 맥락을 확인할 수 없어 평가에서 제외했습니다."
-    if len(distinct_publishers) < 2:
-        data["reliability_notes"]["independent_corroboration"] = "서로 독립적인 원문 자료를 2곳 이상 확보하지 못해 평가할 수 없습니다."
+        data["reliability_notes"]["independent_corroboration"] = (
+            "주장을 뒷받침하는 서로 다른 매체의 자료가 2곳 미만이어서 교차 확인을 평가하기 어렵습니다."
+        )
+    elif data["reliability"].get("independent_corroboration") is None:
+        data["reliability"]["independent_corroboration"] = 0.5
+        data["reliability_notes"]["independent_corroboration"] = (
+            f"{len(distinct_publishers)}개 매체의 자료에서 같은 핵심 내용이 확인됩니다. "
+            "다만 취재원·원자료의 독립성까지 확인한 것은 아니므로 부분 충족으로 평가합니다."
+        )
     data["reliability_score"] = score_index(data["reliability"], SCORE_KEYS)
     data["validity_score"] = score_index(data["validity"], VALIDITY_KEYS)
     data["sources"] = sources
