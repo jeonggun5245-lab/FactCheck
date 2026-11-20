@@ -64,7 +64,8 @@ def build_report(article: dict, result: dict) -> str:
     val = result.get("validity_score", {})
     lines += ["## 신뢰성", f"- 점수: {rel.get('score') if rel.get('score') is not None else '평가 보류'}", "## 타당성·균형성", f"- 점수: {val.get('score') if val.get('score') is not None else '평가 보류'}", "## 어조·편향", f"- 어조: {result.get('tone', '')}", f"- 편향 지표: {', '.join(result.get('bias_signals', []))}", result.get('bias_explanation', ''), "## 기업·정보 이용자 영향", f"- 기업: {', '.join(result.get('companies', []))}", f"- 소비자·투자자 영향: {result.get('audience_impact', '')}", f"- 기업 영향: {result.get('corporate_impact', '')}", f"- 관찰된 시장 변화: {result.get('observed_market_change', '')}", f"- 확인된 재무적 영향: {result.get('documented_financial_impact', '')}", f"- 인과관계 평가: {result.get('causality_assessment', '')}", "## 참고 자료"]
     for source in result.get("sources", []):
-        lines.append(f"- [{source['id']}] [{source['title']}]({source['url']}) — {source['domain']} / {source['date']}")
+        link_label = source['url'] if source.get('url_resolved', True) else "Google 뉴스 경유 주소(언론사 원문 주소 미확인)"
+        lines.append(f"- [{source['id']}] [{source['title']}]({source['url']}) — {source.get('publisher', source['domain'])} / {source['date']} / {link_label}")
     lines += ["", "## 한계"] + [f"- {item}" for item in result.get("limitations", [])]
     lines += ["- GDELT 검색 결과는 관련 보도 탐색 자료이며 공식 원자료를 대체하지 않습니다.", "- 서로 다른 도메인의 기사가 독립적인 취재인지 별도 확인이 필요합니다.", "- AI의 오류 가능성이 있으므로 출처 원문을 직접 확인해야 합니다."]
     return "\n".join(lines)
@@ -196,7 +197,9 @@ if st.session_state.get("tc_result"):
         if result.get("sources"):
             for source in result["sources"]:
                 st.markdown(f"**{source['id']} · [{source['title']}]({source['url']})**")
-                st.caption(f"{source.get('domain', '출처 미상')} · {source.get('date', '날짜 미상')} · 자료 유형: {source.get('text_origin', '확인되지 않음')} · 검색어: {source.get('search_query', '확인되지 않음')}")
+                publisher_label = source.get('publisher', source.get('domain', '출처 미상'))
+                url_note = "원문 주소 확인" if source.get("url_resolved", True) else "Google 뉴스 경유 주소 · 언론사 원문 주소 미확인"
+                st.caption(f"{publisher_label} · {source.get('date', '날짜 미상')} · {url_note} · 자료 유형: {source.get('text_origin', '확인되지 않음')} · 검색어: {source.get('search_query', '확인되지 않음')}")
                 excerpt = (source.get("text") or "").strip()
                 if excerpt:
                     st.markdown("**실제로 확보한 자료 내용**")
