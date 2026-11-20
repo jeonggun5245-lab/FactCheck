@@ -200,12 +200,33 @@ URL: {article.get('url','')}
                     "explanation": str(item.get("explanation", "")),
                 })
         claim["evidence_quotes"] = valid_quotes
-        # A source is linked to a claim only when an exact supporting excerpt
-        # can be located in the collected text.
+        # Search-result snippets are discovery clues, not article-body evidence.
         claim["source_ids"] = list(dict.fromkeys(q["source_id"] for q in valid_quotes))
-        if not claim["source_ids"] and claim.get("verdict") in ("확인", "일부 확인·맥락 누락"):
+        body_quote_ids = {
+            q["source_id"] for q in valid_quotes
+            if source_map.get(q["source_id"], {}).get("text_origin") == "본문"
+        }
+        snippet_quote_ids = {
+            q["source_id"] for q in valid_quotes
+            if source_map.get(q["source_id"], {}).get("text_origin") == "검색 결과 요약"
+        }
+        claim["body_evidence_ids"] = sorted(body_quote_ids)
+        claim["snippet_only_ids"] = sorted(snippet_quote_ids)
+        if not body_quote_ids and claim.get("verdict") == "확인":
+            if snippet_quote_ids:
+                claim["verdict"] = "일부 확인·맥락 누락"
+                claim["reason"] = (
+                    "검색 결과 제목·요약에서 주장의 일부를 시사하는 문구는 확인했지만, "
+                    "언론사 기사 본문이나 독립적인 원자료를 확인하지 못했습니다. "
+                    "따라서 제목 수준의 단서만으로 전체 주장을 '확인'할 수 없습니다. "
+                    + str(claim.get("reason", ""))
+                )
+            else:
+                claim["verdict"] = "평가 보류"
+                claim["reason"] = "주장을 직접 뒷받침하는 출처 본문 문장을 확보하지 못해 판정을 보류합니다."
+        elif not claim["source_ids"] and claim.get("verdict") in ("확인", "일부 확인·맥락 누락"):
             claim["verdict"] = "평가 보류"
-            claim["reason"] = "제공된 외부 자료에서 주장을 직접 뒷받침하는 원문 문장을 확인하지 못했습니다. 따라서 현재 자료만으로는 판정을 유지할 수 없습니다."
+            claim["reason"] = "제공된 외부 자료에서 주장을 직접 뒷받침하는 문장을 확인하지 못했습니다."
     data["reliability"] = clamp_score_map(data.get("reliability"), SCORE_KEYS)
     data["validity"] = clamp_score_map(data.get("validity"), VALIDITY_KEYS)
     # Do not turn missing evidence into a middling score. These dimensions
@@ -217,6 +238,21 @@ URL: {article.get('url','')}
             data["reliability"][key] = None
     if len(distinct_publishers) < 2:
         data["reliability"]["independent_corroboration"] = None
+    # Internal article qualities can be assessed from the submitted article;
+    # logic, context and counterevidence require substantive external material.
+    if not full_text_sources:
+        for key in ("logic", "context", "counterevidence"):
+            data["validity"][key] = None
+            data["validity_notes"][key] = (
+                "외부 출처의 기사 본문을 확보하지 못해 주장과 근거의 논리, "
+                "시장·사건 맥락, 반대 근거를 대조할 수 없습니다. 점수 산정에서 제외했습니다."
+            )
+    if not full_text_sources:
+        data["reliability_notes"]["evidence_credibility"] = "검색 결과 요약만 확보되어 원문 근거의 신뢰성을 평가할 수 없습니다."
+        data["reliability_notes"]["factual_accuracy"] = "주요 수치와 사실을 원문 또는 1차 자료로 대조하지 못해 평가할 수 없습니다."
+        data["reliability_notes"]["timeliness_context"] = "게시 시점만으로 사건 발생 시점과 시장 맥락을 확인할 수 없어 평가에서 제외했습니다."
+    if len(distinct_publishers) < 2:
+        data["reliability_notes"]["independent_corroboration"] = "서로 독립적인 원문 자료를 2곳 이상 확보하지 못해 평가할 수 없습니다."
     data["reliability_score"] = score_index(data["reliability"], SCORE_KEYS)
     data["validity_score"] = score_index(data["validity"], VALIDITY_KEYS)
     data["sources"] = sources
