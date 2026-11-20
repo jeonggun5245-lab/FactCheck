@@ -59,7 +59,12 @@ def build_report(article: dict, result: dict) -> str:
     for claim in result.get("claims", []):
         if not isinstance(claim, dict):
             continue
-        lines += [f"### {claim.get('claim', '')}", f"- 유형: {claim.get('type', '')}", f"- 판정: {claim.get('verdict', '')}", f"- 근거: {claim.get('reason', '')}", f"- 출처 ID: {', '.join(claim.get('source_ids', []))}", ""]
+        lines += [f"### {claim.get('claim', '')}", f"- 유형: {claim.get('type', '')}", f"- 판정: {claim.get('verdict', '')}", f"- 근거: {claim.get('reason', '')}", f"- 출처 ID: {', '.join(claim.get('source_ids', []))}"]
+        for quote in claim.get("evidence_quotes", []):
+            quote_source = next((s for s in result.get("sources", []) if s.get("id") == quote.get("source_id")), {})
+            quote_kind = "기사 본문" if quote_source.get("text_origin") == "본문" else "검색 결과 요약(탐색 단서)"
+            lines.append(f"> [{quote_kind} · {quote.get('source_id', '')}] {quote.get('quote', '')}")
+        lines.append("")
     rel = result.get("reliability_score", {})
     val = result.get("validity_score", {})
     lines += ["## 신뢰성", f"- 점수: {rel.get('score') if rel.get('score') is not None else '평가 보류'}", "## 타당성·균형성", f"- 점수: {val.get('score') if val.get('score') is not None else '평가 보류'}", "## 어조·편향", f"- 어조: {result.get('tone', '')}", f"- 편향 지표: {', '.join(result.get('bias_signals', []))}", result.get('bias_explanation', ''), "## 기업·정보 이용자 영향", f"- 기업: {', '.join(result.get('companies', []))}", f"- 소비자·투자자 영향: {result.get('audience_impact', '')}", f"- 기업 영향: {result.get('corporate_impact', '')}", f"- 관찰된 시장 변화: {result.get('observed_market_change', '')}", f"- 확인된 재무적 영향: {result.get('documented_financial_impact', '')}", f"- 인과관계 평가: {result.get('causality_assessment', '')}", "## 참고 자료"]
@@ -120,7 +125,9 @@ if st.session_state.get("tc_result"):
             st.write(claim.get("reason", "근거 설명 없음"))
             for quote in claim.get("evidence_quotes", []):
                 st.markdown(f"> “{quote['quote']}”")
-                st.caption(f"{quote['source_id']} · 원문에서 정확히 일치하는 문장 · {quote.get('explanation', '')}")
+                quote_source = next((s for s in result.get("sources", []) if s.get("id") == quote["source_id"]), {})
+                quote_kind = "기사 본문에서 확인한 문장" if quote_source.get("text_origin") == "본문" else "검색 결과 요약에서 확인한 문구(검증 근거가 아닌 탐색 단서)"
+                st.caption(f"{quote['source_id']} · {quote_kind} · {quote.get('explanation', '')}")
             linked = [s for s in result.get("sources", []) if s.get("id") in claim.get("source_ids", [])]
             if linked:
                 for source in linked:
