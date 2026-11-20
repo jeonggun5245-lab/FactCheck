@@ -98,7 +98,13 @@ def search_google_news(query: str, maxrecords: int = 5, date_window: tuple[str, 
             # Its title and snippet remain useful discovery evidence, but the
             # aggregator URL/domain must not be mistaken for the publisher.
             final_url = link
-        domain = urlparse(final_url).hostname or "출처 미상"
+        final_host = (urlparse(final_url).hostname or "").removeprefix("www.")
+        publisher_node = item.find("source")
+        publisher_name = (publisher_node.text or "").strip() if publisher_node is not None else ""
+        url_resolved = bool(final_host and final_host != "news.google.com")
+        # If redirect resolution failed, keep the RSS publisher label but
+        # do not mistake the Google News host for the publisher.
+        domain = final_host if url_resolved else (publisher_name or "원문 매체 URL 미확인")
         description_html = item.findtext("description") or ""
         snippet = BeautifulSoup(description_html, "html.parser").get_text(" ", strip=True)
         published = item.findtext("pubDate") or "날짜 미상"
@@ -109,7 +115,9 @@ def search_google_news(query: str, maxrecords: int = 5, date_window: tuple[str, 
         results.append({
             "title": title,
             "url": final_url,
-            "domain": domain.removeprefix("www."),
+            "domain": domain,
+            "publisher": publisher_name or domain,
+            "url_resolved": url_resolved,
             "date": published,
             "language": "ko",
             "country": "KR",
